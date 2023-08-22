@@ -5,17 +5,17 @@
 2. Problem
 3. Solution
 4. TypeScript Compiler
-5. AST
-6. Nodes
-7. Visitor
-8. Tree Reversal
-9. Angular DI
+  - AST
+  - Node
+  - Visitor
+9. Tree Reversal
+10. Angular DI
    - SkipSelf
    - Self
    - Optional
    - Host
    - Inject
-10. The Migration Script
+11. The Migration Script
 
 ## Introduction
 So one of the cool features of Angular 14 is the `inject` function -just another way to resolve a dependency- but there was no auto migration for it.
@@ -52,3 +52,47 @@ You might think to change components on the go, change a couple of classes now a
 
 ## Bouns section
 an ESLint rule that will prevent constructor injection
+
+## TypeScript Compiler
+
+### AST
+_It's the code you wrote but in a form that can be utilised._ In other words, the code you write is essentially a text that ain't useful unless it can be parsed. That parsing process produces a tree data structure called AST.
+
+Understanding AST is crucial as the rest of the writing is all about it
+
+Taking the following text -code-
+```ts
+function whatAmI() { }
+```
+
+Will turn into 
+
+```json
+{ // -> Node
+  "flags": 0,
+  "kind": 308,
+  "statements": [
+    { // -> Node
+      "kind": 259,
+      "flags": 0,
+      "name": { // -> Node
+        "flags": 0,
+        "kind": 79,
+        "escapedText": "whatAmI"
+      },
+      "parameters": [], // Node[]
+      "body": { // Node
+        "flags": 0,
+        "kind": 238,
+        "statements": []
+      }
+    }
+  ]
+```
+
+Since it's a tree that means in our language each object we see is a **Node**
+
+Some data are easy to understand, but others like flags and kinds might be new to you so let's break them down.
+
+### Flags
+
