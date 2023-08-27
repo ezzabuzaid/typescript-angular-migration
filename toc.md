@@ -14,7 +14,7 @@
   - Simple Injection
   - Injection Token
   - Considering inheritance
-  - useFactory and the deps array
+  - `useFactory` and the `deps` array
 
 ## Introduction
 
@@ -131,7 +131,7 @@ const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
 				node.body
 			);
 		}
-		return node;
+		return ts.visitEachChild(node, visit, context);
 	};
 	return (node) => ts.visitEachChild(node, visit, context);
 };
@@ -163,13 +163,13 @@ The `printCode` function it's a utility function that transforms the AST back to
 
 I hope you noticed the `visit` function 😁, Let's talk about it, it is a simpler version of what is called the Visitor Pattern. An essential part of how the TypeScript Compiler API works. Actually, you'll see that design pattern whenever you work with AST, Hey at least I did!
 
-A "visitor" is basically a function you define. This function will be invoked for each node in the AST during the traversal. The function is called with the current node and returns a new node that replaces it. This is how we perform manipulations on the AST.
-
-You have a few choices:
+A "visitor" is basically a function you define to be invoked for each node in the AST during the traversal. The function is called with the current node and has few return choices.
 
 - Return the node as is, meaning no changes.
-- Return a new node to replace it.
+- Return a new node of the same kind (otherwise might disrupt the AST) to replace it.
 - Return undefined to remove the node entirely.
+
+Regardless of what the choice is, the visit chain will stop right after and this is how we perform manipulations on the AST!
 
 Okay, time to run the code!
 
@@ -179,6 +179,7 @@ Okay, time to run the code!
 Time to talk about Angular then, do you think so?
 
 ## Angular
+
 If you're still new to [how DI works](https://angular.io/guide/dependency-injection-overview) I advise you to read more about it, but if you're comfortable with it let's wake up your memory
 
 There are 3 main parts to injecting a dependency in an Angular class
@@ -198,7 +199,7 @@ In this sample
 2. Token: Service
 3. Dependency Name: _service
 
-Also, we can add other modifiers and combine them like
+Also, we can add other modifiers and combine them
 
 - @Self()
 - @SkipSelf()
@@ -250,6 +251,19 @@ Other modifiers as well like `readonly` should be taken into consideration
 _Note: We will call these decorators modifiers from now on._
 
 That is all that you need to recall about Angular DI; we need to know this stuff so we can handle them properly later on, now we are going to rewrite these cases using the `inject` function.
+
+One more thing beside DI, typescript allows us to use dependency parameter name within its block without having to use `this`
+
+```ts
+@Component({ ... })
+export class ConstructorInjectionComponent extends SuperComponent {
+    constructor(private _service: Service) {
+	_service.someLogic()
+    }
+}
+```
+
+It is valid and we need to keep that in mind as well!
 
 **Old**
 ```ts
@@ -304,7 +318,154 @@ export class ConstructorInjectionComponent extends SuperComponent {
 }
 ```
 
+## The Migration Script
+We will go through a few steps
+1. Fetch all files under `tsconfig.json`
+2. Encapsulate all files under TypeScript **Program**
+4. Prepare the transform function.
+5. Run the transform function over each file.
 
- 
+### Reading tsconfig.json
+
+Although this part of the code may appear as a boilerplate, I'm including it here for reference to prevent any confusion when we reference it later in the article. The getFilesFromTsConfig function essentially reads the tsconfig.json file and parses its content, storing the parsed information in the result variable.
+
+```
+function getFilesFromTsConfig(tsconfigPath: string) {
+	const parseConfigHost: ts.ParseConfigHost = {
+		fileExists: ts.sys.fileExists,
+		readDirectory: ts.sys.readDirectory,
+		readFile: ts.sys.readFile,
+		useCaseSensitiveFileNames: true,
+	};
+	const result = ts.parseJsonConfigFileContent(
+		ts.readConfigFile(tsconfigPath, ts.sys.readFile).config,
+		parseConfigHost,
+		path.dirname(tsconfigPath)
+	);
+	return result;
+}
+```
+
+The result variable contains important information extracted from the tsconfig.json file, such as file names and compiler options.
+
+### TypeScript Program
+
+When working with the TypeScript Compiler, one of the central elements you'll encounter is the Program object. This object serves as the starting point for many of the operations you might want to perform, like type checking, emitting output files, or transforming the source code. The Program is created using the `ts.createProgram` function, which can accept a variety of configuration options, such as
+
+- options: These are the compiler options that guide how the TypeScript Compiler will behave. This could include settings like the target ECMAScript version, module resolution strategy, and whether to include type-checking errors, among others.
+- rootNames: This property specifies the entry files for the program. It usually contains an array of filenames that act as the roots from which the TypeScript Compiler will begin its operations. These are often the .ts or .tsx files that serve as entry points to your application or library.
+- projectReferences: If your TypeScript project consists of multiple sub-projects that reference each other, this property is used to manage those relationships.
+- configFileParsingDiagnostics: This property is an array that will capture any diagnostic information or errors that arise when parsing the tsconfig.json file.
+
+```ts
+const tsconfigPath = './tsconfig.json'; // path to your tsconfig.json
+const tsConfigParseResult = getFilesFromTsConfig(tsconfigPath);
+
+const program = ts.createProgram({
+  options: tsConfigParseResult.options,
+  rootNames: tsConfigParseResult.fileNames,
+  projectReferences: tsConfigParseResult.projectReferences,
+  configFileParsingDiagnostics: tsConfigParseResult.errors,
+});
+```
+In this sample, we read all files from a specific `tsconfig.json` and created a TypeScript program from the tsconfig parsing results.
+
+### The Transform Function
+If you read the article from the start you've already seen what a transformer function looks like
+
+```ts
+const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
+	const visit: ts.Visitor = (node) => {
+		if (ts.isFunctionDeclaration(node)) {
+			// do some stuff to a function declaration
+		}
+		return ts.visitEachChild(node, visit, context);
+	};
+	return (node) => ts.visitEachChild(node, visit, context);
+};
+```
+Instead of looking for a function node, we need to look for a class node and if a class node doesn't have an Angular decorator then we break the visit chain by returning something
+
+```ts
+if (ts.isClassDeclaration(node)) {
+const angularDecorators = ['NgModule', 'Component', 'Directive', 'Injectable', 'Pipe'];
+  if (angularDecorators.some((it) => getDecorator(node, it) === false) {
+	return node // break the visit chain by returning the node as we described in the earlier section
+  }
+}
+```
+
+Keep in mind that if you didn't do a return the code will move till this line `return ts.visitEachChild(node, visit, context);` which means visit the current node children. in our context, that means we're only visiting `ClassDeclaration` node children.
+
+Moving forward, for the `constructor` we need to visit its children, specifically its parameters to convert them to the new syntax and its body to ensure that the code is still working as expected.
+
+```ts
+if (ts.isConstructorDeclaration(node)) {
+  const updatedNode = ts.visitEachChild(node, visit, context);
+
+  if (
+    updatedNode.parameters.length ||
+    updatedNode.body?.statements.length
+  ) {
+    return ts.factory.createConstructorDeclaration(
+      node.modifiers,
+      updatedNode.parameters,
+      updatedNode.body
+    );
+  }
+
+  return undefined;
+}
+```
+After that let's assume that the constructor no longer has parameters and a body then there is no use for it; That's why you see `return undefined;` which means remove the constructor from the class. Of course, this is up to you, If you prefer to keep an empty constructor then just replace it with `return updatedNode;`
+
+Let's visit the constructor parameter, 
+
+```ts
+if (ts.isParameter(node)) {
+	if (!node.modifiers) {
+		// ignore non constructor parameters
+		return node;
+	}
+
+	if (!ts.isIdentifier(node.name)) {
+		// ignore properties with destructuring
+		// @Inject(TOKEN) { someValue }: Interface
+		return node;
+	}
+
+	const tokenMetadata = makeTokenMetadata(node);
+	const parameterMetadata = makeParameterMetadata(node);
+	tokensMap[node.name.getText(currentSourceFile)] = tokenMetadata;
+	if (tokenMetadata.ignore) {
+		// return the node as is since it cannot be migrated
+		return node;
+	}
+	changes.push(convertToInjectSyntax(parameterMetadata, tokenMetadata));
+	return undefined;
+}
+```
+
+The thing about the parameter node is that not only the constructor can have it, class instance and static methods can have it as well, however, there is a convenient way to distinguish constructor parameters from method parameters by checking for the presence of modifiers on the parameter node. if it is undefined then keep the node as is. Another case where the parameter doesn't have a name! if you recall from above, a dependency line can have no name if `InjectionToken` is used or if we didn't prefix it with a modifier.
+
+Assuming the node is a constructor node then we need to
+1. Extract some details from it and that is done by calling `makeTokenMetadata` on the node.
+2. Save the token for later because we're going to need it in different visit stages.
+3. If the node should ignored let it pass, We'll know soon what could be the reasons a parameter node cannot be migrated.
+4. Convert the node to the new syntax and store it for later. We'll be using the `changes` array in the visit `ClassDeclaration` stage as we cannot return `PropertyDeclaration` node -The new node from the to migrate to syntax- in the `ParameterDeclaration` visit stage.
+5. Finally, return undefined to remove the parameter from the constructor.
+
+
+
+## Todo: 
+1. Handle inheritance.
+2. Handle injection token with type any or not type at all.
+3. Migrating more than one class in the same file.
+4. Adding `inject` import if it not already imported or update current import if there was one.
+
+## Optimisation
+The code does work but it still can be optimised further, for instance, we can parallelise the migration so every 20 files, for instance, are run in a different worker_thread
+
 ## Bouns section
+
 an ESLint rule that will prevent constructor injection
