@@ -183,14 +183,21 @@ Time to talk about Angular then, do you think so?
 If you're still new to [how DI works](https://angular.io/guide/dependency-injection-overview) I advise you to read more about it, but if you're comfortable with it let's wake up your memory
 
 There are 3 main parts to injecting a dependency in an Angular class
-1. The access modifier whether public, private and protected
-2. The Token -dependency-
-3. The dependency name
+1. The access modifier whether public, private or protected - _Optional_
+2. The Token (dependency) - _Mandatory_ 
+3. The dependency name - _Mandatory_ but it can be either an identifier or a destructured object
 
 ```ts
 @Component({ ... })
 export class ConstructorInjectionComponent {
     constructor(private _service: Service) { }
+}
+```
+
+```ts
+@Component({ ... })
+export class ConstructorInjectionComponent {
+    constructor({someValue}: Service) { }
 }
 ```
 
@@ -252,7 +259,7 @@ _Note: We will call these decorators modifiers from now on._
 
 That is all that you need to recall about Angular DI; we need to know this stuff so we can handle them properly later on, now we are going to rewrite these cases using the `inject` function.
 
-One more thing beside DI, typescript allows us to use dependency parameter name within its block without having to use `this`
+One more thing besides DI, typescript allows us to use dependency parameter name within its block without having to use `this`
 
 ```ts
 @Component({ ... })
@@ -434,34 +441,131 @@ if (ts.isParameter(node)) {
 		return node;
 	}
 
-	const tokenMetadata = makeTokenMetadata(node);
+	const tokenMetadata = makeTokenMetadata(node, node.name);
 	const parameterMetadata = makeParameterMetadata(node);
-	tokensMap[node.name.getText(currentSourceFile)] = tokenMetadata;
-	if (tokenMetadata.ignore) {
-		// return the node as is since it cannot be migrated
+
+	if (!tokenMetadata) {
+		// ignore parameters without token -Deps Type-
 		return node;
 	}
+
+	tokensMap[node.name.getText(currentSourceFile)] = tokenMetadata;
 	changes.push(convertToInjectSyntax(parameterMetadata, tokenMetadata));
 	return undefined;
 }
 ```
 
-The thing about the parameter node is that not only the constructor can have it, class instance and static methods can have it as well, however, there is a convenient way to distinguish constructor parameters from method parameters by checking for the presence of modifiers on the parameter node. if it is undefined then keep the node as is. Another case where the parameter doesn't have a name! if you recall from above, a dependency line can have no name if `InjectionToken` is used or if we didn't prefix it with a modifier.
+The thing about the parameter node is that not only the constructor can have it, class instance and static methods can have it as well, however, there is a convenient way to distinguish constructor parameters from method parameters by checking for the presence of modifiers on the parameter node.
+
+So, a parameter can be migrated if
+1. It doesn't have `modifiers`.
+2. It has a name! if you recall from above, the dependency line can have a destructure syntax instead of a name.
+3. It has a token (Dependency Type) - we can know that by checking if the parameter type is `TypeReference`, more on that later.
+
+```ts
+constructor(private {someValue}: Service) { } // no name
+constructor(private _service: any) { } // no token
+constructor(private _service) { } // no type at all
+```
 
 Assuming the node is a constructor node then we need to
 1. Extract some details from it and that is done by calling `makeTokenMetadata` on the node.
 2. Save the token for later because we're going to need it in different visit stages.
-3. If the node should ignored let it pass, We'll know soon what could be the reasons a parameter node cannot be migrated.
-4. Convert the node to the new syntax and store it for later. We'll be using the `changes` array in the visit `ClassDeclaration` stage as we cannot return `PropertyDeclaration` node -The new node from the to migrate to syntax- in the `ParameterDeclaration` visit stage.
-5. Finally, return undefined to remove the parameter from the constructor.
+3. Convert the node to the new syntax and store it for later. We'll be using the `changes` array in the visit `ClassDeclaration` stage as we cannot return `PropertyDeclaration` node -The new node from the migrate function- in the `ParameterDeclaration` visit stage.
+4. Finally, return undefined to remove the parameter from the constructor.
 
+Moving on, let's write the `makeTokenMetadata` function. the function should return three properties:
+- name: the dependency line name.
+- token: the dependency token.
+- type: the dependency full type.
+
+The difference between token and type could be demonstrated in the following code
+
+```ts
+constructor(private _elementRef: ElementRef) {}
+constructor(private _elementRef: ElementRef<InputHtmlElement>) {}
+```
+
+The token and type in the first constructor are the same but in the second the token is `ElementRef` but the type is `ElementRef<InputHtmlElement>`
+
+There are two ways to specify the dependency line token
+
+1. Using a dependency type as a token
+2. Using `@Inject` to specify the token
+
+```ts
+constructor(private _service: Service) { }
+constructor(@Inject(FAST_TOKEN) private _measure: IFast) { }
+```
+
+Resuming `makeTokenMetadata`
+
+To extract details from the first way (without `@Inject`)
+
+```ts
+function makeTokenMetadata(
+	param: ts.ParameterDeclaration,
+	paramName: ts.Identifier
+) {
+	const token = // -> 1
+		param.type &&
+		ts.isTypeReferenceNode(param.type) &&
+		ts.isIdentifier(param.type.typeName)
+			? param.type.typeName.text
+			: undefined;
+
+	if (!token) { // -> 2
+		return undefined;
+	}
+
+	return {
+		name: name,
+		token: token,
+		get genericType() { // -> 3
+			// the type reference could be ElementRef<HTMLElement>
+			// but the token can only be ElementRef
+			// so if the type is the same as the token
+			// we don't need to specify it as generic in the inject function
+			const type = param.type?.getText(currentSourceFile);
+			return type === token ? undefined : type;
+		},
+	};
+}
+```
+
+1. A parameter doesn't necessarily have a type so we need to make sure it does and it is a `TypeReference`. Once we get there we only need `typeName` and that is our token. We said before that `TypeReference` can be `ElementRef<InputHtmlElement>` therefore the `typeName` here is `ElementRef` only.
+2. When we visited the parameter node before we added a check that says if there is no token then we pass that parameter.
+3. The `genericType` is the full `TypeReference`. The common case is that a token is the same as the type, in that case, we don't need to add it as a generic type to the `inject` function.  
+
+_Note: I'm assuming that the line of dependency has a valid TypeReference (non-valid could be union or primitive type). Angular already validates that on startup._
+
+Let's extract details from the `Inject` way
+
+```ts
+let injectDecorator = getDecorator(param, 'Inject'); // -> 1
+if (injectDecorator) {
+	const args = getDecoratorArguments(injectDecorator);
+	return {
+		name: paramName,
+		token: (args[0] as ts.Identifier).text, // -> 2
+		get genericType() { // -> 3
+			// We need the full type regardless of what it is.
+			return param.type?.getText(currentSourceFile);
+		},
+	};
+}
+```
+
+1. The `getDecorator` is a utility function to get a decorator from a node if there is one.
+2. The `@Inject()` decorator accepts the token as the first argument, I'll assume it is there because TypeScript won't allow it otherwise.
+3. We need to return type as is because that line of dependency allows any type.
 
 
 ## Todo: 
 1. Handle inheritance.
 2. Handle injection token with type any or not type at all.
 3. Migrating more than one class in the same file.
-4. Adding `inject` import if it not already imported or update current import if there was one.
+4. Adding `inject` import if it is not already imported or updating current import if there was one.
 
 ## Optimisation
 The code does work but it still can be optimised further, for instance, we can parallelise the migration so every 20 files, for instance, are run in a different worker_thread
