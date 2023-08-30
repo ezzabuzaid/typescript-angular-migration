@@ -336,7 +336,7 @@ We will go through a few steps
 
 Although this part of the code may appear as a boilerplate, I'm including it here for reference to prevent any confusion when we reference it later in the article. The getFilesFromTsConfig function essentially reads the tsconfig.json file and parses its content, storing the parsed information in the result variable.
 
-```
+```ts
 function getFilesFromTsConfig(tsconfigPath: string) {
 	const parseConfigHost: ts.ParseConfigHost = {
 		fileExists: ts.sys.fileExists,
@@ -404,7 +404,7 @@ const angularDecorators = ['NgModule', 'Component', 'Directive', 'Injectable', '
 
 Keep in mind that if you didn't do a return the code will move till this line `return ts.visitEachChild(node, visit, context);` which means visit the current node children. in our context, that means we're only visiting `ClassDeclaration` node children.
 
-Moving forward, for the `constructor` we need to visit its children, specifically its parameters to convert them to the new syntax and its body to ensure that the code is still working as expected.
+Moving forward, for the `constructor` we need to visit its children, specifically its parameters to convert them to the new syntax and its body to ensure that the code is still working as expected (prefix used dependencies with `this`).
 
 ```ts
 if (ts.isConstructorDeclaration(node)) {
@@ -455,7 +455,7 @@ if (ts.isParameter(node)) {
 }
 ```
 
-The thing about the parameter node is that not only the constructor can have it, class instance and static methods can have it as well, however, there is a convenient way to distinguish constructor parameters from method parameters by checking for the presence of modifiers on the parameter node.
+The thing about the parameter node is that not only the constructor can have it, class instance and static methods can have it as well, however, there is a convenient way to distinguish constructor parameters from method parameters by checking the presence of `modifiers` on the parameter node.
 
 So, a parameter can be migrated if
 1. It doesn't have `modifiers`.
@@ -468,8 +468,8 @@ constructor(private _service: any) { } // no token
 constructor(private _service) { } // no type at all
 ```
 
-Assuming the node is a constructor node then we need to
-1. Extract some details from it and that is done by calling `makeTokenMetadata` on the node.
+Assuming the node is a constructor parameter node then we need to
+1. Extract some details from it and that is done by calling `makeTokenMetadata` and `makeParameterMetadata` on the node.
 2. Save the token for later because we're going to need it in different visit stages.
 3. Convert the node to the new syntax and store it for later. We'll be using the `changes` array in the visit `ClassDeclaration` stage as we cannot return `PropertyDeclaration` node -The new node from the migrate function- in the `ParameterDeclaration` visit stage.
 4. Finally, return undefined to remove the parameter from the constructor.
@@ -519,7 +519,7 @@ function makeTokenMetadata(
 	}
 
 	return {
-		name: name,
+		name: paramName.text,
 		token: token,
 		get genericType() { // -> 3
 			// the type reference could be ElementRef<HTMLElement>
@@ -544,9 +544,9 @@ Let's extract details from the `Inject` way
 ```ts
 let injectDecorator = getDecorator(param, 'Inject'); // -> 1
 if (injectDecorator) {
-	const args = getDecoratorArguments(injectDecorator);
+	const args = (injectDecorator.expression as ts.CallExpression).arguments;
 	return {
-		name: paramName,
+		name: paramName.text,
 		token: (args[0] as ts.Identifier).text, // -> 2
 		get genericType() { // -> 3
 			// We need the full type regardless of what it is.
@@ -560,6 +560,193 @@ if (injectDecorator) {
 2. The `@Inject()` decorator accepts the token as the first argument, I'll assume it is there because TypeScript won't allow it otherwise.
 3. We need to return type as is because that line of dependency allows any type.
 
+Now that we have got the information we need about the token let's examine the parameter modifiers
+
+```ts
+function makeParameterMetadata(param: ts.ParameterDeclaration) {
+	const hasModifier = (modifier: ts.Modifier['kind']) =>
+		(param.modifiers ?? []).some((m) => m.kind === modifier);
+
+	return {
+		isPublic: hasModifier(ts.SyntaxKind.PublicKeyword),
+		isPrivate: hasModifier(ts.SyntaxKind.PrivateKeyword),
+		isProtected: hasModifier(ts.SyntaxKind.ProtectedKeyword),
+		isReadonly: hasModifier(ts.SyntaxKind.ReadonlyKeyword),
+		isOptional: getDecorator(param, 'Optional'),
+		isSelf: getDecorator(param, 'Self'),
+		isSkipSelf: getDecorator(param, 'SkipSelf'),
+		isHost: getDecorator(param, 'Host'),
+	};
+}
+```
+Nothing fancy here; both modifiers and decorators are arrays, so a simple array search operation is performed to find the required metadata. The function makeParameterMetadata returns an object containing boolean flags indicating which modifiers and decorators are present.
+
+Here's the `getDecorator` utility function, the same as `hasModifier` but it also makes sure that a decorator is a `CallExpression` -invoked as you're invoking a function `@Self()` with parentheses-
+
+```ts
+function getDecorator(node: ts.HasDecorators, decoratorName: string) {
+	const decorators = ts.getDecorators(node) ?? [];
+	return decorators.find((it) => {
+		if (ts.isCallExpression(it.expression)) {
+			return (
+				ts.isIdentifier(it.expression.expression) &&
+				it.expression.expression.text === decoratorName
+			);
+		}
+		return false;
+	});
+}
+```
+
+#### The Migrator
+
+We've all been waiting for this function, lucky you it is simple to digest.
+Recall how we request dependency using `inject` function.
+
+Syntax
+```
+[public/private/protected/#] [readonly/override] <name> = inject(<Token>, [{
+	optional: true,
+	skipSelf: true,
+	self: true,
+	host: true
+}])
+```
+
+Example
+```ts
+private _service = inject(Service);
+#service = inject(Service, {
+	host: true
+});
+```
+
+Essentially, you construct a new property declaration that incorporates all the previous settings like visibility (public, private, etc.) and injection flags/options
+
+First, let's create the inject function arguments.
+```ts
+function convertToInjectSyntax(
+	parameterMetadata: ReturnType<typeof makeParameterMetadata>,
+	tokenMetadata: NonNullable<ReturnType<typeof makeTokenMetadata>>
+) {
+	const injectArgs: ts.Expression[] = [
+		ts.factory.createIdentifier(tokenMetadata.token),
+	];
+}
+```
+See, told you, simple. A function that accepts both token and parameter metadata, the `injectArgs` are the arguments for the `inject` function, in this sample we add the token argument. Let's add the options argument
+
+```ts
+const optionsProperties: ts.PropertyAssignment[] = [];
+if (parameterMetadata.isOptional) {
+	optionsProperties.push(
+		ts.factory.createPropertyAssignment('optional', ts.factory.createTrue())
+	);
+}
+if (parameterMetadata.isSelf) {
+	optionsProperties.push(
+		ts.factory.createPropertyAssignment('self', ts.factory.createTrue())
+	);
+}
+if (parameterMetadata.isSkipSelf) {
+	optionsProperties.push(
+		ts.factory.createPropertyAssignment('skipSelf', ts.factory.createTrue())
+	);
+}
+if (parameterMetadata.isHost) {
+	optionsProperties.push(
+		ts.factory.createPropertyAssignment('host', ts.factory.createTrue())
+	);
+}
+// append the options object only if it has options
+if (optionsProperties.length) {
+	injectArgs.push(
+		ts.factory.createObjectLiteralExpression(optionsProperties)
+	);
+}
+```
+
+An object property has two things, key and value -initializer-. the `createPropertyAssignment` function accepts the key as the first argument and value -Expression- as the second argument.
+The `options` object will only appear if there is a need for it.
+
+_Note: you might want to consider making the inject type to be token type or null when `isOptional` is true to catch errors at compile time_
+
+It's time to create the inject function
+
+```ts
+const depsType = tokenMetadata.genericType
+	? [ts.factory.createTypeReferenceNode(tokenMetadata.genericType, undefined)]
+	: undefined;
+
+const injectFn = ts.factory.createCallExpression(
+	ts.factory.createIdentifier('inject'),
+	depsType,
+	injectArgs
+);
+```
+With that in place, the `inject` function is complete, we have got the token, the generic type and arguments.
+
+Time for the left part of the statement.
+
+```ts
+const modifiers: ts.Modifier[] = [
+	ts.factory.createModifier(
+		parameterMetadata.isPublic
+			? ts.SyntaxKind.PublicKeyword
+			: parameterMetadata.isProtected
+			? ts.SyntaxKind.ProtectedKeyword
+			: ts.SyntaxKind.PrivateKeyword
+	),
+];
+
+if (parameterMetadata.isReadonly) {
+	modifiers.push(ts.factory.createModifier(ts.SyntaxKind.ReadonlyKeyword));
+}
+
+const propertyName = ts.factory.createIdentifier(tokenMetadata.name);
+
+```
+
+In the snippet, we're adding things back as they were, with one exception we default to private modifier as a last resort. You might be thinking why not use JavaScript native private identifier In that case, sure thing we can
+
+```ts
+const modifiers: ts.Modifier[] = [];
+const accessModifier = parameterMetadata.isPublic
+	? ts.SyntaxKind.PublicKeyword
+	: parameterMetadata.isProtected
+	? ts.SyntaxKind.ProtectedKeyword
+	: null;
+
+if (accessModifier) {
+	modifiers.push(ts.factory.createModifier(accessModifier));
+}
+
+if (parameterMetadata.isReadonly) {
+	modifiers.push(ts.factory.createModifier(ts.SyntaxKind.ReadonlyKeyword));
+}
+
+const propertyName = accessModifier
+	? ts.factory.createIdentifier(tokenMetadata.name)
+	: ts.factory.createPrivateIdentifier(tokenMetadata.name);
+```
+We had to make a slight modification to the logic where we default to `null` if the parameter isn't `public` or `protected`.
+
+The statement is complete left and right parts. Combining everything to create class property.
+
+```ts
+return ts.factory.createPropertyDeclaration(
+	modifiers,
+	propertyName,
+	undefined, // question or exclamation token (? !)
+	undefined, // property type. Not needed as we're relying on the inject generic type
+	injectFn
+);
+```
+
+Congrats! The migrator function is done.
+
+At this point, you might wonder how to integrate this inject function into Angular classes. Well, that's the next big step! You'll replace the original constructor parameter declaration with this newly formed inject function call. Recall before when we visited the parameter node -`ts.isParameter(node)`-, we stored the result of the migrator function in the `changes` array. It is the time to make use of it
+
 
 ## Todo: 
 1. Handle inheritance.
@@ -569,6 +756,17 @@ if (injectDecorator) {
 
 ## Optimisation
 The code does work but it still can be optimised further, for instance, we can parallelise the migration so every 20 files, for instance, are run in a different worker_thread
+
+## Outroduction
+Throughout the writing, we assumed your code is already valid and can be compiled and works on runtime, if that is not the case then you'll have to adjust the code a bit to handle the error, a clear example is this line
+```ts
+const args = (injectDecorator.expression as ts.CallExpression).arguments;
+```
+Here, we assume the decorator is invoked `@Inject(SOME_TOKEN)` but if it is written like `@Inject` then it won't work unless you avoid the parameter completely by checking if the `injectDecorator` node is invoked by calling `ts.isCallExpression`. That is one example, however, there are a lot of such.
+
+Another thing, if you're using custom decorators along with Angular ones you'd need to make some adjustments to keep the same behaviour, like moving the custom decorators along with other properties
+
+I hope you learned something new today about TypeScript Compiler, It works wonders for such a huge change. Look at your codebase I'm certain that you can find a use case somewhere. The compiler API can be used to accomplish different things as well like code generation or ensuring specific criteria are met before/after the build script run or [transforming code into fly](https://github.com/TypeStrong/ts-loader#getcustomtransformers).
 
 ## Bouns section
 
