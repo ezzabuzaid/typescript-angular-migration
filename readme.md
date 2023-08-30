@@ -19,7 +19,7 @@
   - Apply Changes
   - Considering Inheritance
   - `useFactory` and the `deps` array
-
+  - JavaScript Private Fields (need to change the body statements to have # instead of underscore)
 ## Introduction
 
 Transitioning to Angular's new `inject` function can seem daunting, especially with a large codebase. But thanks to the TypeScript Compiler API, we can automate this task and make our code more maintainable and future-proof.
@@ -538,7 +538,7 @@ function makeTokenMetadata(
 
 	return {
 		name: paramName.text,
-		token: token,
+		token: ts.factory.createIdentifier(token),
 		get genericType() { // -> 3
 			// the type reference could be ElementRef<HTMLElement>
 			// but the token can only be ElementRef
@@ -565,7 +565,7 @@ if (injectDecorator) {
 	const args = (injectDecorator.expression as ts.CallExpression).arguments;
 	return {
 		name: paramName.text,
-		token: (args[0] as ts.Identifier).text, // -> 2
+		token: args[0], // -> 2
 		get genericType() { // -> 3
 			// We need the full type regardless of what it is.
 			return param.type?.getText(currentSourceFile);
@@ -577,6 +577,8 @@ if (injectDecorator) {
 1. The `getDecorator` is a utility function to get a decorator from a node if there is one.
 2. The `@Inject()` decorator accepts the token as the first argument, I'll assume it is there because TypeScript won't allow it otherwise.
 3. We need to return type as is because that line of dependency allows any type.
+
+_Note: @Inject() accepts class, injection token, forwardRef() and string hence, we need to move it as is without any changes_
 
 Now that we have got the information we need about the token let's examine the parameter modifiers
 
@@ -745,9 +747,10 @@ if (parameterMetadata.isReadonly) {
 
 const propertyName = accessModifier
 	? ts.factory.createIdentifier(tokenMetadata.name)
-	: ts.factory.createPrivateIdentifier(tokenMetadata.name);
+	: ts.factory.createPrivateIdentifier(`#${tokenMetadata.name}`);
 ```
-We had to make a slight modification to the logic where we default to `null` if the parameter isn't `public` or `protected`.
+
+We had to make a slight modification to the logic where we default to `null` if the parameter isn't `public` or `protected`. Some codebases use '_' to denoate private field, if your's do that then you might need to remove the '_'. _It looks ugly #_name_
 
 The statement is complete left and right parts. Combining everything to create class property.
 
