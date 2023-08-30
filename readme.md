@@ -795,7 +795,9 @@ const args = (injectDecorator.expression as ts.CallExpression).arguments;
 ```
 Here, we assume the decorator is invoked `@Inject(SOME_TOKEN)` but if it is written like `@Inject` then it won't work unless you avoid the parameter completely by checking if the `injectDecorator` node is invoked by calling `ts.isCallExpression`. That is one example, however, there are a lot of such.
 
-Another thing, if you're using custom decorators along with Angular ones you'd need to make some adjustments to keep the same behaviour, like moving the custom decorators along with other properties
+Make sure to build the app(s) after running the migration script successfully, it'd be better as well to serve app(s) and surface them causually.  
+
+More over, if you're using custom decorators along with Angular ones you'd need to make some adjustments to keep the same behaviour, like moving the custom decorators along with other properties
 
 I hope you learned something new today about TypeScript Compiler, It works wonders for such a huge change. Look at your codebase I'm certain that you can find a use case somewhere. The compiler API can be used to accomplish different things as well like code generation or ensuring specific criteria are met before/after the build script run or [transforming code into fly](https://github.com/TypeStrong/ts-loader#getcustomtransformers).
 
