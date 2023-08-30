@@ -169,11 +169,10 @@ I hope you noticed the `visit` function 😁, Let's talk about it, it is a simpl
 
 A "visitor" is basically a function you define to be invoked for each node in the AST during the traversal. The function is called with the current node and has few return choices.
 
-- Return the node as is, meaning no changes.
+- Return the node as is (no changes).
 - Return a new node of the same kind (otherwise might disrupt the AST) to replace it.
 - Return undefined to remove the node entirely.
-
-Regardless of what the choice is, the visit chain will stop right after and this is how we perform manipulations on the AST!
+- Return a visitor `ts.visitEachChild(node, visit, context)` which will visit the node children if have.
 
 Okay, time to run the code!
 
