@@ -11,9 +11,13 @@
   - Visitor
 5. Angular DI
 6. The Migration Script
-  - Simple Injection
-  - Injection Token
-  - Considering inheritance
+  - Reading TsConfig
+  - TypeScript Program
+  - Transform Function
+  - The Dependency Line
+  - The Migrator
+  - Apply Changes
+  - Considering Inheritance
   - `useFactory` and the `deps` array
 
 ## Introduction
@@ -332,7 +336,7 @@ We will go through a few steps
 4. Prepare the transform function.
 5. Run the transform function over each file.
 
-### Reading tsconfig.json
+### Reading TsConfig
 
 Although this part of the code may appear as a boilerplate, I'm including it here for reference to prevent any confusion when we reference it later in the article. The getFilesFromTsConfig function essentially reads the tsconfig.json file and parses its content, storing the parsed information in the result variable.
 
@@ -391,18 +395,31 @@ const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
 	return (node) => ts.visitEachChild(node, visit, context);
 };
 ```
-Instead of looking for a function node, we need to look for a class node and if a class node doesn't have an Angular decorator then we break the visit chain by returning something
+Instead of looking for a function node, we need to look for a class node and check if it is qualified for migration and if not we need to break the visit chain by returning the node as is as explain before.
+
+A class is qualified for migration if 
+1. The class node should have an Angular decorator.
+2. The class node should have a constructor present.
+3. The constructor should have parameters (dependency lines)
 
 ```ts
 if (ts.isClassDeclaration(node)) {
-const angularDecorators = ['NgModule', 'Component', 'Directive', 'Injectable', 'Pipe'];
-  if (angularDecorators.some((it) => getDecorator(node, it) === false) {
-	return node // break the visit chain by returning the node as we described in the earlier section
-  }
+	const cstr = node.members.find(ts.isConstructorDeclaration);
+	if (!cstr || cstr.parameters.length === 0) {
+		return node;
+	}
+
+	const angularDecorators = ['NgModule', 'Component', 'Directive', 'Injectable', 'Pipe'];
+	const isAngularClass = angularDecorators.some((it) => getDecorator(node, it))
+	if (!isAngularClass) {
+		return node;
+	}
+
+	// the class node is already qualified at this point
 }
 ```
 
-Keep in mind that if you didn't do a return the code will move till this line `return ts.visitEachChild(node, visit, context);` which means visit the current node children. in our context, that means we're only visiting `ClassDeclaration` node children.
+The `return node` breaks the visit chain as we described in the earlier section. Keep in mind that if you didn't do a return the code will move till this line `return ts.visitEachChild(node, visit, context);` which means visit the current node children. in our context, that means we're only visiting `ClassDeclaration` node children.
 
 Moving forward, for the `constructor` we need to visit its children, specifically its parameters to convert them to the new syntax and its body to ensure that the code is still working as expected (prefix used dependencies with `this`).
 
@@ -426,7 +443,9 @@ if (ts.isConstructorDeclaration(node)) {
 ```
 After that let's assume that the constructor no longer has parameters and a body then there is no use for it; That's why you see `return undefined;` which means remove the constructor from the class. Of course, this is up to you, If you prefer to keep an empty constructor then just replace it with `return updatedNode;`
 
-Let's visit the constructor parameter, 
+Let's visit the constructor parameter
+
+### The Dependency Line
 
 ```ts
 if (ts.isParameter(node)) {
@@ -598,7 +617,7 @@ function getDecorator(node: ts.HasDecorators, decoratorName: string) {
 }
 ```
 
-#### The Migrator
+### The Migrator
 
 We've all been waiting for this function, lucky you it is simple to digest.
 Recall how we request dependency using `inject` function.
@@ -745,7 +764,17 @@ return ts.factory.createPropertyDeclaration(
 
 Congrats! The migrator function is done.
 
-At this point, you might wonder how to integrate this inject function into Angular classes. Well, that's the next big step! You'll replace the original constructor parameter declaration with this newly formed inject function call. Recall before when we visited the parameter node -`ts.isParameter(node)`-, we stored the result of the migrator function in the `changes` array. It is the time to make use of it
+At this point, you might wonder how to integrate this inject function into Angular classes. Well, that's the next big step! You'll replace the original constructor parameter declaration with this newly formed inject function call. Recall that when we visited the parameter node -`ts.isParameter(node)`-, we stored the result of the migrator function in the `changes` array. It is the time to make use of it.
+
+### Apply Changes
+Let's go back to visiting `ClassDeclaration` node and complete where we left off
+
+```ts
+if (ts.isClassDeclaration(node)) {
+	// the class node is already qualified at this point
+}
+```
+
 
 
 ## Todo: 
