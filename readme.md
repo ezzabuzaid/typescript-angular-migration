@@ -337,10 +337,10 @@ We will go through a few steps
 
 ### Reading TsConfig
 
-Although this part of the code may appear as a boilerplate, I'm including it here for reference to prevent any confusion when we reference it later in the article. The getFilesFromTsConfig function essentially reads the tsconfig.json file and parses its content, storing the parsed information in the result variable.
+Although this part of the code may appear as a boilerplate, I'm including it here for reference to prevent any confusion when we reference it later in the article. The parseTsConfig function essentially reads the tsconfig.json file and parses its content, storing the parsed information in the result variable.
 
 ```ts
-function getFilesFromTsConfig(tsconfigPath: string) {
+function parseTsConfig(tsconfigPath: string) {
 	const parseConfigHost: ts.ParseConfigHost = {
 		fileExists: ts.sys.fileExists,
 		readDirectory: ts.sys.readDirectory,
@@ -369,7 +369,7 @@ When working with the TypeScript Compiler, one of the central elements you'll en
 
 ```ts
 const tsconfigPath = './tsconfig.json'; // path to your tsconfig.json
-const tsConfigParseResult = getFilesFromTsConfig(tsconfigPath);
+const tsConfigParseResult = parseTsConfig(tsconfigPath);
 
 const program = ts.createProgram({
   options: tsConfigParseResult.options,
